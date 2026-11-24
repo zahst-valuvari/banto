@@ -1,7 +1,0 @@
-# このフォークの運用
-
-- `main` は本番（Cloudflare の本番の Worker がビルドする）。PR でしか入れない
-- `staging` は確認用（Worker `valuvari-staging` がビルドする）
-- 本家（bantojs/banto）の更新は、本家の `main` → この `staging` の PR で取り込み、Staging で確かめてから `staging` → `main` の PR で本番へ
-- フォークの画面の「Sync fork」は押さない（`main` に直接入り、本番がすぐ入れ替わるため）
-- 手順の全体: zahst-valuvari/zahst-ec-internal の operations/valuvari-staging-runbook.md
