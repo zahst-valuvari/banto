@@ -14,6 +14,7 @@ import { memberNewsHref } from "../../modules/member-news";
 import { receiptAvailable } from "../../modules/receipt/data";
 import { shopImageSrc } from "../../pages/markdown";
 import { t, tf, type MessageKey, getLocale } from "../../i18n";
+import { feeLabelFor, komojuMethodButtonLabel } from "../../commerce/payment-fees";
 import { formatDateTime, isoToZonedDate } from "../../i18n/time";
 import { SKU_IMAGE_SCRIPT, imageOptionsOf, orderImagesForSku } from "../../products/images";
 import { OPTION_AXES_SCRIPT, displayOptionAxes } from "../../products/option-axes";
@@ -817,6 +818,18 @@ export const defaultTheme: Theme = {
               {shipping.summary}
               {shipping.freeOver !== null ? `（${yen(shipping.freeOver)}以上で送料無料）` : ""} · <a href={`${ctx.shopPath}/shipping`}>{t("store.shipping_details")}</a>
             </p>
+            {(() => {
+              // 送料無料までの目安（0171: ログイン中の会員は会員の条件の金額も。表示だけ、確認画面の送料が正）
+              const over = shipping.viewerFreeOver ?? shipping.freeOver;
+              // 送料無料のクーポンが入っていれば出さない（クーポンの案内の文がある）
+              if (over === null || buyable.length === 0 || coupons?.applied.some((a) => a.free_shipping)) return null;
+              const left = over - total;
+              return (
+                <p class="free-shipping-hint">
+                  {left > 0 ? tf("store.free_shipping_remaining", { amount: yen(left) }) : shipping.viewerFreeMember ? t("store.free_shipping_reached_member") : t("store.free_shipping_reached")}
+                </p>
+              );
+            })()}
             {checkoutEnabled ? (
               <div>
                 {payments.stripe ? (
@@ -829,7 +842,20 @@ export const defaultTheme: Theme = {
                     </p>
                   </form>
                 ) : null}
-                {payments.komoju ? (
+                {payments.komoju && payments.komoju_methods
+                  ? // 支払い方法の手数料（0170）: KOMOJU を種類ごとに（決済ページはその種類だけ）
+                    payments.komoju_methods.map((m) => (
+                      <form method="post" action={`${ctx.shopPath}/checkout`} style="display:inline-block;margin-right:.5rem">
+                        <input type="hidden" name="provider" value={`komoju:${m.type}`} />
+                        <p>
+                          <button type="submit" disabled={short}>
+                            {komojuMethodButtonLabel(m)}
+                          </button>
+                        </p>
+                      </form>
+                    ))
+                  : null}
+                {payments.komoju && !payments.komoju_methods ? (
                   <form method="post" action={`${ctx.shopPath}/checkout`} style="display:inline-block;margin-right:.5rem">
                     <input type="hidden" name="provider" value="komoju" />
                     <p>
@@ -984,7 +1010,7 @@ export const defaultTheme: Theme = {
     );
   },
 
-  AddressPage({ ctx, provider, values, prefectures, shipping, subtotal, error, delivery, consent, saveAddress }) {
+  AddressPage({ ctx, provider, method, values, prefectures, shipping, subtotal, error, delivery, consent, saveAddress }) {
     const field = (name: keyof typeof values, label: string, type = "text", required = true, autocomplete?: string) => (
       <div>
         <label for={name}>{label}</label>
@@ -997,10 +1023,11 @@ export const defaultTheme: Theme = {
         <p>{t("store.address_intro")}</p>
         <p class="muted">
           {t("store.subtotal_tax_included")}: {yen(subtotal)} · {shipping.summary}
-          {shipping.freeOver !== null && subtotal >= shipping.freeOver ? `（${t("store.free_shipping_applied")}）` : ""}
+          {(shipping.viewerFreeOver ?? shipping.freeOver) !== null && subtotal >= (shipping.viewerFreeOver ?? shipping.freeOver)! ? `（${t("store.free_shipping_applied")}）` : ""}
         </p>
         {error ? <p class="error">{error}</p> : null}
         <form method="post" action={`${ctx.shopPath}/checkout/${provider}`}>
+          {method ? <input type="hidden" name="method" value={method} /> : null}
           {field("customer_name", t("store.address_name"), "text", true, "name")}
           {field("customer_email", t("store.address_email"), "email", true, "email")}
           {field("phone", t("store.address_phone"), "tel", true, "tel")}
@@ -1086,6 +1113,9 @@ export const defaultTheme: Theme = {
         <h1>{t("store.shipping_title")}</h1>
         <p>{shipping.summary}</p>
         {shipping.freeOver !== null ? <p>{`${yen(shipping.freeOver)}以上のご注文で送料無料`}</p> : null}
+        {(shipping.memberFree ?? []).map((m) => (
+          <p>{m.freeOver === 0 ? tf("store.member_free_shipping_always", { label: m.label }) : tf("store.member_free_shipping", { label: m.label, amount: yen(m.freeOver) })}</p>
+        ))}
         {shipping.table ? (
           <table>
             <tbody>
@@ -1824,7 +1854,7 @@ export const defaultTheme: Theme = {
                 </tr>
                 {Number(r["fee_jpy"] ?? 0) > 0 ? (
                   <tr>
-                    <td>{t("confirm.cod_fee")}</td>
+                    <td>{feeLabelFor(r["payment_provider"])}</td>
                     <td></td>
                     <td>{yen(Number(r["fee_jpy"]))}</td>
                   </tr>

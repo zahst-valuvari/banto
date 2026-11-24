@@ -164,7 +164,7 @@ GET /api/shops/<shop>/cart?cart=<トークン>
   "subtotal_jpy": 6000,
   "tax_rate": 10,
   "tax_included": true,
-  "shipping": { "summary": "全国一律 ¥500", "free_over_jpy": 10000, "remaining_for_free_jpy": 4000, "by_prefecture": null },
+  "shipping": { "summary": "全国一律 ¥500", "free_over_jpy": 10000, "viewer_free_over_jpy": 10000, "member_free_applies": false, "remaining_for_free_jpy": 4000, "by_prefecture": null, "member_free": [] },
   "payments": { "stripe": true, "komoju": false },
   "delivery": { "dates": [{ "value": "2026-10-20", "label": "10月20日（火）" }], "slots": [{ "value": "am", "label": "午前中" }] },
   "can_checkout": true,
@@ -234,6 +234,7 @@ POST /api/shops/<shop>/checkout/quote
     "lines": [ { "sku_id": "…", "code": "TEE-M", "product_name": "Tシャツ", "sku_name": "M", "unit_price_jpy": 3000, "qty": 2, "line_total_jpy": 6000, "tax_rate": 10, "reduced": false } ],
     "subtotal_jpy": 6000,
     "shipping_jpy": 500,
+    "shipping_free_reason": null,
     "discounts": [{ "code": "TEN", "name": "10% オフ", "amount_jpy": 600 }],
     "discount_jpy": 600,
     "total_jpy": 5900,
@@ -462,7 +463,7 @@ GET  /api/shops/<shop>/members/orders/<番号>/receipt    （会員トークン�
 - **ゲストの注文**は、注文番号と注文時のメールアドレスで開きます（同梱テーマの注文照会と同じ）。合わなければ `404 not_found`（番号とアドレスのどちらが違ったかは返しません）。`order_token`（24 時間）は領収書と、この注文についてのお問い合わせ（`/inquiries` の `order_token`）にそのまま渡せます。
 - **会員の注文**は会員トークンで開きます（その会員の注文だけ。別の会員の注文・ゲストで買った注文は `404 not_found`）。ゲストで買った注文は会員に結びつけません（番号とメールアドレスで開いてください）。逆に、**会員として買った注文は番号とメールアドレスでは開けません**（`404 not_found`。0089。注文メールのリンクに `banto_member=1` が付くのはこのためです）。
 - `order` は `number` `status`（`paid` / `shipped` / `cancelled` / `refunded`）`created_at` `shipped_at` `total_jpy` `shipping_jpy` `discount_jpy` `discounts` `tracking`（`carrier` `number`）`items`（`name` `sku` `qty` `unit_price_jpy` `tax_rate`）など。**住所・メールアドレスは返しません。**
-- `receipt`（同梱モジュール receipt が ON で、支払い済み・発送済みの注文だけ。ほかは `409 receipt_not_available`、モジュールが OFF なら `404 receipt_disabled`）は、領収書（適格簡易請求書）の記載事項と計算結果です: `kind`（登録番号があれば `qualified_simplified_invoice`、無ければ `receipt`）`issuer` `invoice_number` `proviso`（但し書き）`issued_at` `number` `order_date` `items`（`line_total_jpy`、軽減税率の対象は `reduced: true`。表示に ※ を付けて凡例を添える）`shipping_jpy` `discounts` `total_jpy` `tax`（税率ごとの `rate` `amount_jpy`（税込の対象額）`tax_jpy`（うち消費税額））。**税の計算は Banto の結果をそのまま表示してください**（連携側で計算し直すと端数が合わなくなります）。宛名は購入者が連携側の画面で入れるものとして、Banto は受け取りません。
+- `receipt`（同梱モジュール receipt が ON で、支払い済み・発送済みの注文だけ。ほかは `409 receipt_not_available`、モジュールが OFF なら `404 receipt_disabled`）は、領収書（適格簡易請求書）の記載事項と計算結果です: `kind`（登録番号があれば `qualified_simplified_invoice`、無ければ `receipt`）`issuer` `invoice_number` `proviso`（但し書き）`issued_at` `number` `order_date` `items`（`line_total_jpy`、軽減税率の対象は `reduced: true`。表示に ※ を付けて凡例を添える）`shipping_jpy` `fee_jpy`（手数料。無ければ 0）`fee_label`（手数料の見出し。代金引換は「代引き手数料」、KOMOJU の支払い方法の手数料は「お支払い手数料」、手数料が無ければ `null`）`payment_provider`（`stripe` / `komoju` / `amazon_pay` / `cod` など）`discounts` `total_jpy` `tax`（税率ごとの `rate` `amount_jpy`（税込の対象額）`tax_jpy`（うち消費税額））。**税の計算は Banto の結果をそのまま表示してください**（連携側で計算し直すと端数が合わなくなります）。宛名は購入者が連携側の画面で入れるものとして、Banto は受け取りません。
 - 応答はキャッシュさせません（`Cache-Control: no-store`）。メールアドレスを URL に載せないため、ゲストの呼び出しは POST です。
 
 ### 会員ページを連携サイトに向ける
@@ -524,7 +525,13 @@ GET  /api/shops/<shop>/members/orders/<番号>/receipt    （会員トークン�
 
 注文照会（ゲストの `/orders/lookup`・会員の `/members/orders/:number`）の注文には `payment_status`（`paid` / `unpaid`）と `paid_at` が付きます。未入金（代金引換など）の注文は `status` が `pending`（受付）か `shipped` で、領収書は入金の後に出ます（docs/hooks.md「注文の状態とお支払いの状態」）。
 
+## 会員の条件ごとの送料無料（0171）
+
+詳しくは docs/audiences.md「会員の条件ごとの送料無料」。カートの `shipping.member_free`（`[{ label, free_over_jpy }]`）は、運営者が名前を付けた決まりだけです（会員の条件の名前・中身は出しません）。会員トークンを付けたカートは、その会員の「あと○円で送料無料」の目安を `shipping.viewer_free_over_jpy`・`member_free_applies`・`remaining_for_free_jpy` で返します（会員トークンに入っている独自項目で判定する目安。数分ずれることがあります）。当てはまるかは会員トークンの会員のデータベースの最新の独自項目で、quote の `confirmation.shipping_free_reason` が `audience` なら会員の条件による送料無料、`threshold` ならショップ全体の金額による送料無料です。会員トークンのカートでは `remaining_for_free_jpy` が `viewer_free_over_jpy`（見る人の金額）までの残りです（0171 から。`free_over_jpy` はショップ全体の金額のまま）。送料無料のクーポンが入っているかは `coupons.applied[].kind` の `free_shipping` で分かります（`remaining_for_free_jpy` はクーポンを見ません）。
+
 ## 代金引換（同梱モジュール cod）
+
+支払い方法の手数料（0170、docs/plugins.md「KOMOJU」）を決めたショップでは、カートの `payments.komoju_methods`（`[{ type, name, fee }]`、`fee` は一律の手数料・段は `null`・手数料なしは `0`）に KOMOJU の種類が並びます。quote の `provider` には `komoju:<type>`（例 `komoju:konbini`）を送ります（`komoju` だけ・並んでいない種類は 409 `payment_method`）。quote の `confirmation.fee_jpy` と `fee_label`（「お支払い手数料」）、`confirmation.payment.type` が付き、決済ページは選んだ種類だけ・手数料込みです。
 
 `provider: "cod"` で quote を作ると、`confirmation.fee_jpy`（代引き手数料）と `confirmation.payment.cod: true` が付きます。確定（`POST /checkout`）は決済ページへ行かず、受付（未入金）の注文をその場で作って `{ payment_url（完了画面）, cod: true, order_id, … }` を返します。選べないときは quote が 409 `cod_unavailable`（`reason`: `fee` / `max_total` / `members_only`）。詳しくは docs/cod.md「ヘッドレス」。
 

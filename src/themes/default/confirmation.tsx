@@ -5,6 +5,7 @@
  */
 import type { Confirmation } from "../../commerce/checkout";
 import { t, tf } from "../../i18n";
+import { feeLabelFor } from "../../commerce/payment-fees";
 import { yen } from "../../routes/common";
 
 export function ConfirmationBlock({ shopPath, confirmation: cf, quote, error }: { shopPath: string; confirmation: Confirmation; quote: string; error?: string }) {
@@ -45,12 +46,15 @@ export function ConfirmationBlock({ shopPath, confirmation: cf, quote, error }: 
             <td>{yen(cf.subtotal_jpy)}</td>
           </tr>
           <tr>
-            <td colspan={3}>{t("confirm.shipping")}</td>
+            <td colspan={3}>
+              {t("confirm.shipping")}
+              {cf.shipping_free_reason === "audience" ? `（${t("confirm.shipping_member_free")}）` : ""}
+            </td>
             <td>{yen(cf.shipping_jpy)}</td>
           </tr>
           {cf.fee_jpy > 0 ? (
             <tr>
-              <td colspan={3}>{t("confirm.cod_fee")}</td>
+              <td colspan={3}>{cf.fee_label ?? feeLabelFor(cf.payment.provider)}</td>
               <td>{yen(cf.fee_jpy)}</td>
             </tr>
           ) : null}
@@ -145,7 +149,7 @@ export function ConfirmationBlock({ shopPath, confirmation: cf, quote, error }: 
         </p>
       </form>
       <form method="post" action={`${shopPath}/checkout`} style="display:inline-block;margin-right:.5rem">
-        <input type="hidden" name="provider" value={cf.payment.provider} />
+        <input type="hidden" name="provider" value={cf.payment.choice ?? cf.payment.provider} />
         <input type="hidden" name="customer_name" value={a.name} />
         <input type="hidden" name="customer_email" value={a.email} />
         <input type="hidden" name="phone" value={a.phone} />
