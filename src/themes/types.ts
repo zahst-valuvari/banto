@@ -40,12 +40,23 @@ export interface PaymentOptions {
   amazon_pay: boolean;
   /** 同梱モジュール 代金引換（0157） */
   cod?: boolean;
+  /**
+   * KOMOJU を種類ごとに並べる（0170、支払い方法の手数料）。あれば「KOMOJU」1 つの代わりに種類ごとのボタンを置き、
+   * provider に komoju:<type> を送る。fee は一律の手数料（段は null、手数料なしは 0）
+   */
+  komoju_methods?: { type: string; name: string; fee: number | null }[];
 }
 
 export interface ShippingInfo {
   summary: string;
   freeOver: number | null;
   table: { prefecture: string; fee: number }[] | null;
+  /** 会員の条件ごとの送料無料（0171）。運営者が名前を付けた決まりだけ（会員の条件の名前・中身は出さない） */
+  memberFree?: { label: string; freeOver: number }[];
+  /** 見る人の送料無料の金額（0171、表示の目安）: ショップ全体と、ログイン中の会員が当てはまる会員の条件の低い方。無ければ null */
+  viewerFreeOver?: number | null;
+  /** viewerFreeOver が会員の条件のもの（会員特典）か */
+  viewerFreeMember?: boolean;
   taxRate: number;
 }
 
@@ -135,7 +146,7 @@ export interface Theme {
   /**
    * delivery があれば（同梱モジュール delivery_time）、delivery_date・delivery_slot の選択欄を出す（value が "" なら指定なし）
    */
-  AddressPage(props: { ctx: ThemeContext; provider: string; values: AddressFormValues; prefectures: readonly string[]; shipping: ShippingInfo; subtotal: number; error?: string; delivery?: { dates: { value: string; label: string }[]; slots: { value: string; label: string }[] } | null; /** 「お得な情報やセールの案内を受け取る」の欄を出す（ショップの設定、0050） */ consent?: boolean; /** ログイン中の会員（0159）: "auto" = 既定の住所が無いので注文の住所を保存する（お知らせだけ）、"ask" = 既定の住所があるので「この住所を次回も使う」の欄を出す。ゲストは null */ saveAddress?: "auto" | "ask" | null }): Rendered;
+  AddressPage(props: { ctx: ThemeContext; provider: string; /** KOMOJU の種類（0170。隠しの値 method で次の段へ送る） */ method?: string; values: AddressFormValues; prefectures: readonly string[]; shipping: ShippingInfo; subtotal: number; error?: string; delivery?: { dates: { value: string; label: string }[]; slots: { value: string; label: string }[] } | null; /** 「お得な情報やセールの案内を受け取る」の欄を出す（ショップの設定、0050） */ consent?: boolean; /** ログイン中の会員（0159）: "auto" = 既定の住所が無いので注文の住所を保存する（お知らせだけ）、"ask" = 既定の住所があるので「この住所を次回も使う」の欄を出す。ゲストは null */ saveAddress?: "auto" | "ask" | null }): Rendered;
   /**
    * 最終確認画面（特商法の「申込みの最終確認画面」）。confirmation の全項目を表示し、
    * quote を hidden で `${ctx.shopPath}/checkout/${confirmation.payment.provider}` に POST するボタンを置く。

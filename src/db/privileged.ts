@@ -54,6 +54,8 @@ export interface OrderInput {
   currency?: string | null;
   /** 決済の口座（0090。Stripe Connect の接続先のアカウント ID、API キー方式は "platform"、KOMOJU は "komoju"、Amazon Pay は "amazon_pay"）。返金はこの口座で行う */
   payment_account?: string | null;
+  /** 決済事業者が知らせた支払い方法の種類（0170。KOMOJU の payment_details.type）。確認画面で選んだ種類と違えば amount_mismatch */
+  payment_type?: string | null;
 }
 
 /** 在庫予約の上限の材料（0029）。quote は 1 回限り、同じ人・同じ IP の未確定の予約に上限 */
@@ -266,6 +268,10 @@ export interface PrivilegedDb {
   reserveStock(shopId: string, items: ReserveItem[], ttlSeconds: number, limits?: ReserveLimits | null, customerId?: string | null): Promise<string>;
   /** 予約を注文に変換（冪等）。戻り値は order id */
   confirmReservation(reservationId: string, shopId: string, order: OrderInput): Promise<string>;
+  /** 予約の支払い方法の手数料をショップの決まりで確かめる（0170。値引きを付けた後、決済ページを作る前）。違えば amount_mismatch */
+  reservationPaymentFeeCheck(reservationId: string, shopId: string): Promise<number>;
+  /** ログイン中の会員が当てはまる会員の条件のうち、いちばん低い送料無料の金額（0171）。無ければ null */
+  memberFreeShippingOver(shopId: string, member: { id: string; epoch: number; sid: string }): Promise<number | null>;
   /** 予約に購入者情報・送料・会員 ID を一時保持させる（確定時に orders へ移る） */
   attachReservationCustomer(reservationId: string, shopId: string, customer: ReservationCustomer): Promise<void>;
   /** クーポンのコードからキャンペーンを引く（0010）。subject があればその人の使用回数も返す */
@@ -407,7 +413,7 @@ export interface PrivilegedDb {
   /** 0100: 会員限定のページ・記事の読み取り（page_member_get / article_member_get / articles_member_page。ブログをまたぐ articles_member_multi は 0140） */
   contentMemberRpc(fn: "page_member_get" | "article_member_get" | "articles_member_page" | "articles_member_multi", args: Record<string, unknown>): Promise<unknown>;
   /** 0097: 本文のブロックの出し分けに使う会員の条件（モジュールが OFF なら空） */
-  shopAudiencesRender(shopId: string): Promise<{ id: string; name: string; condition: unknown }[]>;
+  shopAudiencesRender(shopId: string): Promise<{ id: string; name: string; condition: unknown; free_over_jpy?: number }[]>;
   /** ヘッドレスの refresh を回す。使い回しならその行を取り消して reuse */
   memberSessionRefresh(shopId: string, customerId: string, epoch: number, sessionId: string, gen: number): Promise<MemberSessionRefresh>;
   /** 取り消す（logout: 自分の端末 / revoked: 一覧から別の端末） */
@@ -592,6 +598,11 @@ export function createPrivilegedDb(opts: PrivilegedDbOptions): PrivilegedDb {
       }),
     confirmReservation: (reservationId, shopId, order) =>
       rpc<string>("confirm_reservation", { p_reservation_id: reservationId, p_shop_id: shopId, p_order: order }),
+    reservationPaymentFeeCheck: (reservationId, shopId) => rpc<number>("reservation_payment_fee_check", { p_reservation_id: reservationId, p_shop_id: shopId }),
+    memberFreeShippingOver: async (shopId, member) => {
+      const r = await rpc<unknown>("member_free_shipping_over", { p_shop_id: shopId, p_customer_id: member.id, p_epoch: member.epoch, p_session_id: member.sid });
+      return typeof r === "number" && Number.isInteger(r) && r >= 0 ? r : null;
+    },
     attachReservationCustomer: (reservationId, shopId, customer) =>
       rpc<void>("attach_reservation_customer", { p_reservation_id: reservationId, p_shop_id: shopId, p_customer: customer }),
     couponLookup: (shopId, codes, subject, customerId) => rpc("coupon_lookup", { p_shop_id: shopId, p_codes: codes, p_subject: subject, ...(customerId ? { p_customer_id: customerId } : {}) }),
@@ -730,7 +741,7 @@ export function createPrivilegedDb(opts: PrivilegedDbOptions): PrivilegedDb {
     contentMemberRpc: (fn, args) => rpc<unknown>(fn, args),
     shopAudiencesRender: async (shopId) => {
       const r = await rpc<unknown>("shop_audiences_render", { p_shop_id: shopId });
-      return Array.isArray(r) ? (r as { id: string; name: string; condition: unknown }[]) : [];
+      return Array.isArray(r) ? (r as { id: string; name: string; condition: unknown; free_over_jpy?: number }[]) : [];
     },
     memberSessionRefresh: (shopId, customerId, epoch, sessionId, gen) =>
       rpc("member_session_refresh", { p_shop_id: shopId, p_customer_id: customerId, p_epoch: epoch, p_session_id: sessionId, p_gen: gen }),
