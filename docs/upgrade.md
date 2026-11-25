@@ -112,6 +112,12 @@ npm run deploy
 
 ### 変更ごとの注意
 
+**接続文字列でマイグレーションを当てるときの証明書（コードの変更、データベースの変更なし）**: 接続文字列の道（「別の方法: 接続文字列で適用する」とコマンドの `migrate`）でも、TLS の証明書を確かめます。既定の道（Supabase のアクセストークン）は変わりません。
+- Supabase のホストは、同梱の Supabase のルート証明書と公の発行元でいつも確かめます（ホスト名も）。`sslmode=disable` は断ります（`sslmode=require` を書いていても確かめます）。
+- `DB_MIGRATION_HOSTS` で許した自前の PostgreSQL は、`sslmode` を書かなければ証明書を確かめるようになりました（今までは確かめずに暗号化だけ）。自己署名などの証明書の DB は、接続文字列に `sslmode=require` を足すと今までと同じく暗号化だけで接続します（docs/self-hosted-db.md）。`sslmode=disable` はそのまま使えます。
+- localhost は今までどおり（書かなければ暗号化しない）。
+- 証明書の確かめの設定は Node から当てるときに効きます。Cloudflare Workers では TLS を Workers の実行環境が受け持ち、いつも公の発行元で確かめるので、`sslmode=require` でも自己署名の証明書の DB には届きません（Node のコマンド `migrate` か、公の発行元の証明書を使ってください）。
+
 **v0.12.0 のコードの変更（データベースの変更なし）**: 守りの締め直しと、デプロイの設定で選べる機能です。コードを更新するだけで効きます。
 - 公開 API（`/api/shops/...`）の POST の JSON の本文に 64 KiB の上限が付きます。超えると 413 `too_large` です（カート・注文照会・お問い合わせ・会員の本文には十分な大きさです）。
 - カート・ヘッドレスのクーポンの理由のうち、無効・開始前・配布数の上限・会員限定・ほかの会員に配られたものは、購入者には `not_found` として返します（docs/headless.md「カート」）。管理画面と AI 用 API では元の理由が見えます。
@@ -184,6 +190,8 @@ npm run deploy
 - **0157_mod_cod（代金引換）**: 同梱モジュール「代金引換」（docs/cod.md）。予約と注文に代引き手数料の列 `fee_jpy`（今までの行は 0）、手数料の関数 `banto_cod_fee`・`banto_cod_max_total`。注文の確定 `confirm_reservation` を作り直し、代金引換の注文を受付（未入金）で確定できるようにします（ほかの支払い方法は今までどおり）。お客様の画面に出す設定の鍵に `cod` を足します。今ある同梱プラグイン「メール通知」「LINE で購入者に知らせる」「LINE 通知」の送信先の購読に `order.created` を足します（代金引換の受付の知らせのため。決済の注文には今までどおり `order.paid` だけで知らせます）。モジュールを ON にするまで、お客様の画面は変わりません。
 - **0158_coupon_cod（クーポンの条件に代金引換）**: クーポンの条件「使える支払い方法」に代金引換（`cod`）を選べるようにします（`banto_api_coupon_apply` を作り直し。値の検査だけ）。今あるクーポンは変わりません。
 - **0159_member_address_from_order（会員の住所の保存）**: 会員の注文が確定したとき、既定の住所がまだ無ければそのお届け先を既定の住所に保存します（注文の表のトリガー `orders_member_address_after`）。既定の住所がある会員は、レジで「この住所を次回も使う」を選んだときだけ上書きします。ゲストの注文・今までの注文は変わりません。個人情報の削除（`mask_customer`）を作り直し、会員の既定の住所と氏名も消すようにします。
+- **0172_api_order_tracking（AI 用 API の注文のお問い合わせ番号）**: 関数 `api_order_json` を定義し直して、注文の JSON に `tracking`（運送会社とお問い合わせ番号、無ければ null）を足します（docs/ai-access.md §24）。表・列は増えません。`orders:read` で返ります。当てる前は `tracking` が入りません。
+- **0173_orders_pii_split（購入者の個人情報のスコープを分ける）**: AI 用トークンのスコープに `orders:contact`（氏名・メール・電話）と `orders:address`（氏名・住所）を足します（表の制約 `api_tokens_scopes_valid`・`banto_scope_perm` を定義し直し、関数 `banto_order_pii` と、旗を分けた `api_order_json` / `api_inquiry_json` / `api_tryon_json` を足し、注文・試着・お問い合わせの `api_*` を定義し直します）。表・列は増えません。`orders:pii` のトークンの見え方は変わりません。当てる前は発行の画面に新しいスコープが出ません（docs/ai-access.md §2）。
 - **0171_audience_free_shipping（会員の条件ごとの送料無料）**: 関数 `member_free_shipping_over`（service_role だけ）を足します（docs/audiences.md「会員の条件ごとの送料無料」）。表・列は増えません。当てる前は、配送の設定に欄が出ず、お店の画面の送料は今までどおりです。ヘッドレスのカートの `shipping.remaining_for_free_jpy` は、会員トークンを付けたときは見る人の送料無料の金額（`viewer_free_over_jpy`、会員の条件の金額がショップ全体より低ければそれ）までの残りになります（`free_over_jpy` はショップ全体の金額のまま。docs/headless.md「会員の条件ごとの送料無料（0171）」）。
 - **0170_payment_fees（支払い方法の手数料）**: KOMOJU の種類ごとの手数料（docs/plugins.md「KOMOJU」）。予約に `payment_method`・`fee_checked` の列、関数 `banto_fee_rule`・`banto_payment_fee`・`reservation_payment_fee_check` を足し、`banto_cod_fee`（読み方を共通に、答えは同じ）・`attach_reservation_customer`・`confirm_reservation`・`banto_shop_public_settings`（`payment_fees` を公開の settings に）を定義し直します。当てる前は管理画面に手数料の画面が出ず、お店の画面は今までどおり「KOMOJU」1 つです。
 - **0169_field_defs_read_scopes（項目の定義を読むスコープ）**: `GET /api/v1/customer-fields` を `customers:write`・`customers:links` のトークンでも、`GET /api/v1/product-fields` を `products:write` のトークンでも読めるようにします（関数 `api_field_defs_get` の定義し直しだけ、表・列は増えません）。当てる前は今までどおり読み取りのスコープだけです。
@@ -320,6 +328,12 @@ GitHub Releases のリリースノートに「手動対応」の項があれば�
 
 - Cloudflare の「変数とシークレット」に項目を追加する
 - Stripe の Webhook で購読するイベントを追加する
+
+### Amazon Pay の IPN（即時支払い通知）の署名
+
+Amazon Pay の IPN（`/webhooks/amazon-pay`）は、Amazon SNS の署名と、通知を送ったトピック（`TopicArn`）と、`MerchantID` を確かめてから処理します。どれかが合わない通知は 403 で断り、Amazon Pay の API を呼びません。
+
+**Amazon Pay を使っている運営者は、IPN のトピックを許す設定が要ります**（docs/plugins.md「IPN を受け付ける（トピックの許可）」）。設定するまでは IPN が断られ、Worker のログに `amazon-pay ipn: TopicArn not allowed: …` と出ます（Worker の実行の単位ごとに 1 分 5 行まで、少なくとも 1 度）。このデプロイが使う環境（テスト環境か本番）の ARN だけを、デプロイの変数 `AMAZON_PAY_IPN_TOPIC_ARNS` に入れてください。IPN は取りこぼしの保険で、お客様がお店に戻ったときの確定は設定が無くても今までどおりです。Amazon Pay に無かった Charge の通知は、受け取らずに 503 を返すようになりました（Amazon Pay が再送します）。
 
 ### これから無くなる互換（期限）
 
