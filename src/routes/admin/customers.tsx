@@ -14,7 +14,7 @@ import { migrated } from "../../db/migration-state";
 import { IDENTITY_IMPORT_MIGRATION } from "./customer-identities";
 import { NOTICE_CHANNEL_MIGRATION } from "../../members/notice-channel";
 import { LINE_TEST_MEMBER_ID_MIGRATION } from "./line-messaging";
-import { kindsFor } from "./notices";
+import { kindsFor, remindersReady } from "./notices";
 import { can } from "./access";
 import { DbError, type Filter } from "../../db/client";
 import { ADMIN_PAGE_SIZE, Pager, olderThan, readAfter, searchRows, splitPage, type PagePosition } from "./paging";
@@ -158,6 +158,7 @@ const DETAIL_FLASH: Record<string, [MessageKey, "notice" | "error"]> = {
   line_test_token_broken: ["linemsg.test_token_broken", "error"],
   line_test_bad_token: ["linemsg.test_bad_token", "error"],
   line_test_not_friend: ["linemsg.test_not_friend", "error"],
+  line_test_bad_message: ["linemsg.test_bad_message", "error"],
   line_test_limit: ["linemsg.test_limit", "error"],
   line_test_failed: ["linemsg.test_failed", "error"],
 };
@@ -346,6 +347,7 @@ customers.get("/:shopId/customers/:customerId", requireOwner, async (c: AdminCon
   // この会員に LINE のテスト送信（0178）: LINE と結びついた会員で、連携・ショップの設定・会員の項目を持つ人だけ
   const lineTest =
     (providers ?? []).includes("line") && can(access, "integrations") && can(access, "settings") && can(access, "customers") && (await migrated({ db, cache: c.get("adapters").cache }, LINE_TEST_MEMBER_ID_MIGRATION));
+  const reminders = lineTest && (await remindersReady(c));
   const code = c.req.query("flash") ?? c.req.query("error") ?? "";
   const msg = DETAIL_FLASH[code];
   const self = customerPath(shopId, customerId);
@@ -498,7 +500,7 @@ customers.get("/:shopId/customers/:customerId", requireOwner, async (c: AdminCon
                 <input type="hidden" name="customer_id" value={r.id} />
                 <label for="line-test-kind">{t("linemsg.test_kind")}</label>
                 <select id="line-test-kind" name="kind">
-                  {kindsFor(shop.settings).map((k) => (
+                  {kindsFor(shop.settings, [], reminders).map((k) => (
                     <option value={k}>{t(`notices.kind.${k}` as MessageKey)}</option>
                   ))}
                 </select>
