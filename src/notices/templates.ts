@@ -4,13 +4,16 @@
  *   - 差し込みは {{名前}}。知らせごとに使える名前・必ず入れる名前・1 回だけの名前（明細のようなかたまり）が決まっている
  *   - 決まりは DB の banto_notice_spec と同じ（保存は notice_text_set が断る。test/db/notice-texts.test.ts で縛る）
  *   - 送るときもここで確かめ直し、合わなければその知らせだけ既定の文面で送る（止めない。管理画面に警告を出す）
- *   - 既定の文面（行が無いとき）は今までの文面と同じ
+ *   - 既定の文面（行が無いとき）は今までの文面と同じ（LINE の注文の知らせだけ 0179 でリンクの行を足した。値が無ければ行ごと消える）
  * 値はすべてプレーンテキスト（メールも LINE も HTML ではない）。値の中の {{…}} はもう一度は置き換えず、値の中の改行・空行もそのまま
  */
 
 export const NOTICE_TEXTS_MIGRATION = "0154_notice_texts";
 
-export const NOTICE_KINDS = ["order_paid", "order_shipped", "tryon_requested", "tryon_ready", "tryon_reminder", "tryon_extended", "tryon_cancelled"] as const;
+export const NOTICE_KINDS = ["order_paid", "order_shipped", "tryon_requested", "tryon_ready", "tryon_reminder", "tryon_extended", "tryon_cancelled", "payment_reminder"] as const;
+
+/** お支払いのお願い（0181）。当てるまで画面に出さない */
+export const PAYMENT_REMINDER_MIGRATION = "0181_payment_reminder";
 export type NoticeKind = (typeof NOTICE_KINDS)[number];
 export type NoticeChannel = "mail" | "line";
 
@@ -25,17 +28,37 @@ export interface NoticeSpec {
 const ORDER_MAIL_SUBJECT = ["shop_name", "customer_name", "number", "total"];
 const TRYON_MAIL_SUBJECT = ["shop_name", "customer_name", "number", "store_name"];
 
-/** DB の banto_notice_spec と同じ */
-export function noticeSpec(kind: NoticeKind, channel: NoticeChannel): NoticeSpec {
-  if (kind === "order_paid" || kind === "order_shipped") {
-    if (channel === "line") return { bodyAllowed: ["shop_name", "number", "total"], bodyRequired: ["number"], once: [] };
-    const shipped = kind === "order_shipped";
+/** LINE の注文の知らせのリンク（{{order_link}}・{{tracking}}）。0179 から */
+export const LINE_NOTICE_LINKS_MIGRATION = "0179_line_notice_links";
+
+/**
+ * DB の banto_notice_spec と同じ。lineLinks は 0179 を当てたか（当てる前の DB は LINE の注文の知らせでリンクの差し込みを断るので、
+ * 管理画面は当てるまで出さない。送るときの確かめ直しは既定の true のまま: 当てる前の DB にはリンク入りの文面が保存されていない）
+ */
+export function noticeSpec(kind: NoticeKind, channel: NoticeChannel, lineLinks = true): NoticeSpec {
+  const shipped = kind === "order_shipped";
+  if (kind === "order_paid" || shipped) {
+    if (channel === "line") {
+      if (!lineLinks) return { bodyAllowed: ["shop_name", "number", "total"], bodyRequired: ["number"], once: [] };
+      return { bodyAllowed: ["shop_name", "number", "total", ...(shipped ? ["tracking"] : []), "order_link"], bodyRequired: ["number"], once: shipped ? ["tracking"] : [] };
+    }
     return {
       subjectAllowed: ORDER_MAIL_SUBJECT,
       subjectRequired: ["number"],
       bodyAllowed: ["shop_name", "customer_name", "number", "total", "order_details", ...(shipped ? ["tracking"] : []), "return_policy", "order_link", "contact"],
       bodyRequired: shipped ? ["order_details", "tracking"] : ["order_details"],
       once: ["order_details", "tracking"],
+    };
+  }
+  if (kind === "payment_reminder") {
+    // 0181: お支払いのお願い。リンク（payment_link）は必ず入れる。LINE に氏名は載せない
+    if (channel === "line") return { bodyAllowed: ["shop_name", "total", "pay_until", "payment_link"], bodyRequired: ["payment_link"], once: ["payment_link"] };
+    return {
+      subjectAllowed: ["shop_name", "customer_name", "total", "pay_until"],
+      subjectRequired: [],
+      bodyAllowed: ["shop_name", "customer_name", "total", "pay_until", "items", "payment_link", "contact"],
+      bodyRequired: ["payment_link"],
+      once: ["items", "payment_link"],
     };
   }
   const plain = kind === "tryon_requested" || kind === "tryon_cancelled";
@@ -83,8 +106,8 @@ function tagsCheck(text: string, allowed: readonly string[], required: readonly 
 export const normalizeNoticeBody = (s: string): string => s.replace(/\r\n?/g, "\n").replace(/^[ \t\n]+|[ \t\n]+$/g, "");
 
 /** 決まりに合うか（保存の前の画面と、送る前の確かめ直し）。合えば null */
-export function checkNoticeText(kind: NoticeKind, channel: NoticeChannel, subject: string | null, body: string): NoticeTextError | null {
-  const spec = noticeSpec(kind, channel);
+export function checkNoticeText(kind: NoticeKind, channel: NoticeChannel, subject: string | null, body: string, lineLinks = true): NoticeTextError | null {
+  const spec = noticeSpec(kind, channel, lineLinks);
   const b = normalizeNoticeBody(body);
   if (b === "") return { code: "body_empty" };
   // NUL は PostgreSQL の text に入らない（保存で落ちる前に理由を出す）
@@ -133,21 +156,21 @@ export interface NoticeTextRow {
   body: string;
 }
 
-/** 既定の文面（今までの文面と同じ） */
+/** 既定の文面（今までの文面と同じ。LINE の注文の知らせは 0179 でリンクの行を足した） */
 export const DEFAULT_NOTICE_TEXTS: Record<NoticeKind, { mail: { subject: string; body: string }; line: string }> = {
   order_paid: {
     mail: {
       subject: "【{{shop_name}}】ご注文ありがとうございます（注文番号 {{number}}）",
       body: "{{customer_name}} 様\n\nご注文を承りました。内容をご確認ください。\n\n{{order_details}}\n\n{{return_policy}}\n\n{{order_link}}\n\n{{contact}}\n\n{{shop_name}}",
     },
-    line: "【{{shop_name}}】ご注文ありがとうございます。\n注文番号 {{number}}\n合計 {{total}}\n発送の準備ができしだい、お知らせします。",
+    line: "【{{shop_name}}】ご注文ありがとうございます。\n注文番号 {{number}}\n合計 {{total}}\n発送の準備ができしだい、お知らせします。\n\n{{order_link}}",
   },
   order_shipped: {
     mail: {
       subject: "【{{shop_name}}】商品を発送しました（注文番号 {{number}}）",
       body: "{{customer_name}} 様\n\nご注文の商品を発送しました。到着までしばらくお待ちください。\n\n{{tracking}}\n\n{{order_details}}\n\n{{order_link}}\n\n{{contact}}\n\n{{shop_name}}",
     },
-    line: "【{{shop_name}}】ご注文の商品を発送しました。\n注文番号 {{number}}\n到着までしばらくお待ちください。",
+    line: "【{{shop_name}}】ご注文の商品を発送しました。\n注文番号 {{number}}\n到着までしばらくお待ちください。\n\n{{tracking}}\n\n{{order_link}}",
   },
   tryon_requested: {
     mail: {
@@ -177,6 +200,13 @@ export const DEFAULT_NOTICE_TEXTS: Record<NoticeKind, { mail: { subject: string;
     },
     line: "【{{shop_name}}】{{store_name}}でのお取り置きを{{hold_until}}まで延長しました。\n受付番号 {{number}}",
   },
+  payment_reminder: {
+    mail: {
+      subject: "【{{shop_name}}】お支払いのお願い（{{pay_until}}まで）",
+      body: "{{customer_name}} 様\n\nお申し込みいただいたご注文のお支払いが、まだ確認できていません。\n{{pay_until}}までにお支払いがないと、お申し込みは取り消されます。\n\n{{items}}\n\n合計（税込）: {{total}}\n\nお支払いがまだの方は、こちらからお支払いに進めます（お申し込みを取りやめることもできます）:\n{{payment_link}}\n\nコンビニ払い・銀行振込の手続きを済ませた方は、KOMOJU から届いたメールの案内でお支払いください。行き違いでお支払い済みの場合は、ご容赦ください。\n\n{{contact}}\n\n{{shop_name}}",
+    },
+    line: "【{{shop_name}}】お支払いのお願い\nお申し込みのお支払いがまだ確認できていません（合計 {{total}}）。\n{{pay_until}}までにお支払いがないと、お申し込みは取り消されます。\n{{payment_link}}",
+  },
   tryon_cancelled: {
     mail: {
       subject: "【{{shop_name}}】お店で試着のお申し込みを取り消しました（受付番号 {{number}}）",
@@ -185,6 +215,12 @@ export const DEFAULT_NOTICE_TEXTS: Record<NoticeKind, { mail: { subject: string;
     line: "【{{shop_name}}】お店で試着のお申し込み（受付番号 {{number}}）を取り消しました。",
   },
 };
+
+/** LINE の既定の文面。0179 を当てる前の DB にはリンクの行の無い文面を出す（そのまま保存しても DB が断らないように） */
+export function defaultLineText(kind: NoticeKind, lineLinks = true): string {
+  const text = DEFAULT_NOTICE_TEXTS[kind].line;
+  return lineLinks ? text : text.replace(/\n\n\{\{(?:tracking|order_link)\}\}/g, "");
+}
 
 /** 直した文面を使えるか（行があって、今の決まりに合う）。使えなければ既定 */
 function usable(kind: NoticeKind, channel: NoticeChannel, row: NoticeTextRow | null | undefined): row is NoticeTextRow {
