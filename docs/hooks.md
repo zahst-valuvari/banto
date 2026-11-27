@@ -14,7 +14,7 @@ Banto のプラグインは「コアの hooks とヘッドレス API だけを�
 | `order.shipped` | 管理画面で「発送済み」にしたとき | `order_id` `shop_id` `total_jpy` `status` `shipped_at` `payment_status`（0156。`unpaid` なら代金はまだ） |
 | `order.cancelled` | 管理画面で「キャンセル」にしたとき | `order_id` `shop_id` `total_jpy` `status` `refunded` `restocked`（在庫を戻したか。取り込んだ注文は false、0031）`payment_status` `reason`（`refused` = 受け取り拒否、0156） |
 | `checkout.abandoned` | 会員の予約が決済されないまま期限切れで解放されたとき（カゴ落ち、0105）。Cron の期限切れと、決済ページの期限切れ（Stripe の `checkout.session.expired`・KOMOJU の `payment.expired`）。**ゲストの予約・支払いの失敗・決済ページを作れなかったときは送らない**。期限切れのあとで決済が済むこともあるので、アプローチの前に注文を確かめ直すこと | `reservation_id` `shop_id` `customer_id` `reason`（`expired`）`items[]`（`sku_id` `product_id` `qty` `unit_price_jpy`）`subtotal_jpy` `started_at` |
-| `checkout.payment_pending` | KOMOJU の未払いの予約に、作ってから 24 時間たって 1 回（お支払いのお願い、0181）。ショップの設定 `payment_reminder` が ON のときだけ。同梱の「メール通知」「LINE で購入者に知らせる」が送る。期限の 1 時間前を切った予約・確定した予約には積まない | `reservation_id` `shop_id` `expires_at` `customer_id`（会員の予約だけ） |
+| `checkout.payment_pending` | KOMOJU の未払いの予約に、作ってから 24 時間たって 1 回（お支払いのお願い、0181）。ショップの設定 `payment_reminder` が ON のときだけ。同梱の「メール通知」「LINE で購入者に知らせる」が送る。外部プラグインは AI 用 API の `GET /api/v1/reservations/{id}/payment-reminder`（0182）で宛先・品目・リンクを読む。期限の 1 時間前を切った予約・確定した予約には積まない | `reservation_id` `shop_id` `expires_at` `customer_id`（会員の予約だけ） |
 | `product.updated` | 商品を保存したとき。SKU（価格・名前・品番など）・商品の画像を足す・変える・消したときと、在庫を人が変えたとき（管理画面・AI 用トークン）と、在庫が「ゼロ ⇄ あり」に切り替わったとき（購入で売り切れた・期限切れの予約が戻って再入荷した）も（0075）。購入で数が減っただけでは送らない（少なくなったことは `inventory.low`）。まだ送っていない同じ商品の知らせがあれば重ねない（まとめて変えても 1 商品 1 通） | `product_id` `shop_id` `slug` `name` `published` |
 | `inventory.low` | 注文確定後に在庫が閾値以下になったとき（閾値は `shops.settings.low_stock_threshold`、既定 3。ゼロ = 売り切れも含む。`available` が 0 かで見分ける）。同じ SKU のまだ送っていない知らせがあるあいだは重ねて積まず、その知らせの `available` を最後の数に書き換える（0142。届くのはいつも最後の数）。人が在庫を減らして閾値より多かった数が閾値以下になったとき（商品の画面・在庫の画面の出荷と棚卸し・AI 用トークン・取り込み、0141）も。人の操作では閾値をまたいだときだけで、閾値以下のまま数を直しただけでは送らない（そのときも `product.updated` は届く） | `shop_id` `sku_id` `product_id`（0075 から） `available` `threshold` |
 | `tryon.requested` | お店で試着の申し込み（同梱モジュール store_tryon、0025） | `request_id` `number` `shop_id` `store_id` `status` `visit_date` `customer_id` |
@@ -156,6 +156,18 @@ Banto は登録したときに取ったマニフェストを覚えておき、�
 - 配信履歴は管理画面「連携」ページに最新 50 件。古い履歴の掃除は今後のマイグレーションで追加予定です。
 - 送信先を無効にすると、以後のイベントは積まれず、積まれていた分も配信されません。
 - 送信先は公開のアドレスだけです。私設の IP（10/8・172.16/12・192.168/16 など）・localhost・社内でしか引けない名前（`.internal`・`.local` など）は、登録でも更新でも受け付けず、配信・テスト送信・マニフェストの取得も送る直前に行き先を確かめて送りません（配信は失敗として履歴に残ります）。同梱プラグインの内部 URL（`https://banto.invalid/plugins/<id>`）は外部の送信先としては登録できません。
+
+### 配信の分け方（1 件の失敗がほかを止めない）
+
+1 回の Cron で取り出した配信は、1 件ずつ独立に扱います。
+
+- **同梱プラグイン（注文のメール・LINE などの取引の知らせ）は外部プラグインを待たずに**並べて送ります。外部プラグインへは同時に 4 件まで（`EXTERNAL_CONCURRENCY`）送ります。Workers は同時に開ける接続が 6 本なので、外部の送信先が遅くても（打ち切りは 10 秒）、取引の知らせと結果の書き込みのための枠が残ります。
+- 同梱プラグインの通信（メール・LINE の API など）にも 1 回 20 秒の打ち切りがあります（`BUNDLED_FETCH_TIMEOUT_MS`）。止まった API でその回が終わらなくなることはなく、打ち切った知らせは失敗として再送されます。
+- 外部の応答の本文は、2xx なら読まずに閉じます（読まれない本文は接続を開いたままにします）。失敗の応答は 4KB まで読み、500 文字を記録します（制御文字は外します）。打ち切りは `timeout after 10000ms` と記録されます。
+- 「送る」と「結果を書く（`finish_hook_delivery`）」は分けています。送る前後の不調（署名・通信・プラグインの例外）はその配信の失敗にとどめ、ほかの配信は最後まで進めます。
+- **送れたのに結果の書き込みが落ちても「失敗」とは書きません**（書き直すと再送で二重に届くため）。書けなかった結果は回の最後にもう 1 回だけ書き直します。それでも書けなければ、ログに `could not record delivery <配信 ID>` と原因を出し、その回の `deliver_hooks` を失敗にします（ほかの配信を全部進めた後で。ハートビートが進まないので、続けば `/health` が気づかせます。docs/monitoring.md）。その配信は 10 分の貸し出しが切れたら取り出し直され、**もう一度届くことがあります**。外部プラグインは `X-Banto-Delivery`（`id`）で重複を外してください（§3）。
+- 通信の回数の上限（`Too many subrequests`）に当たった回・予算の残りがハートビートの分しかない回は、書き直しません。上限に当たった後の外部の配信は送らずに返し（回数を戻す）、次の回で送ります（送っても結果を書けず、貸し出しの後でもう一度届くため）。
+- 記録の文の中身で書き込みが断られたとき（PostgREST の 4xx）は、文を `(the error text could not be recorded)` に差し替えて書き直します。
 
 ## 6. つなぐ（0088）
 
