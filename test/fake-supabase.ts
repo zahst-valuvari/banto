@@ -3849,6 +3849,27 @@ export class FakeSupabase {
         if (!need("line:send")) return unauthorized();
         return json({ month: "2026-11", count: this.lineMessages.filter((m) => m["shop_id"] === shopId && ["pending", "sent"].includes(String(m["status"]))).length, limit: 150 });
       }
+      case "api_reservation_payment_reminder": {
+        // 0182（本物は test/db/payment-reminder-api.test.ts）
+        if (!need("orders:read")) return unauthorized();
+        const r = this.tables.reservations.find((x) => x["id"] === args["p_reservation_id"] && x["shop_id"] === shopId);
+        if (!r || r["status"] !== "pending" || !r["payment_session"] || Date.parse(String(r["expires_at"])) <= Date.now() || this.tables.orders.some((o) => o["reservation_id"] === r["id"])) return notFound();
+        const shop = this.tables.shops.find((x) => x["id"] === shopId)!;
+        const cust = (r["customer"] ?? {}) as Record<string, unknown>;
+        const contact = scopes.includes("orders:contact") || scopes.includes("orders:pii");
+        return json({
+          reservation_id: r["id"],
+          shop_id: shopId,
+          customer_id: r["customer_id"] ?? null,
+          created_at: r["created_at"],
+          expires_at: r["expires_at"],
+          total_jpy: this.reservationTotal(r),
+          payment_method: r["payment_method"] ?? null,
+          items: (r["items"] as { qty: number; unit_price_jpy: number }[]).map((i) => ({ product_name: "Tシャツ", sku_name: "M", sku_code: "TEE-M", qty: i.qty, unit_price_jpy: i.unit_price_jpy })),
+          shop: { slug: shop["slug"], domain: shop["domain"] ?? null },
+          ...(contact ? { email: cust["customer_email"] ?? null, name: cust["customer_name"] ?? null } : {}),
+        });
+      }
       case "api_order_get": {
         if (!need("orders:read")) return unauthorized();
         const o = mine(this.tables.orders.find((x) => x["id"] === args["p_order_id"]));
@@ -4684,7 +4705,7 @@ export class FakeSupabase {
     if (fn === "shop_payment_options") return json(this.paymentOptions(args["p_shop_id"]));
     if (fn === "shop_public_get") return json(this.shopPublicGet(args));
     if (fn === "shop_public_list") return json(this.tables.shops.filter((s) => s["published"] === true).map((s) => this.shopPublicJson(s)));
-    if ((fn.startsWith("member_") && !fn.startsWith("member_tryon_") && fn !== "member_free_shipping_over") || fn === "import_members" || fn === "import_member_passwords" || fn === "shop_oauth_client" || fn === "shop_audiences_render") {
+    if ((fn.startsWith("member_") && !fn.startsWith("member_tryon_") && fn !== "member_free_shipping_over" && fn !== "member_free_shipping") || fn === "import_members" || fn === "import_member_passwords" || fn === "shop_oauth_client" || fn === "shop_audiences_render") {
       return this.memberRpc(fn, args);
     }
     if (fn === "attach_reservation_customer") {
@@ -4938,24 +4959,28 @@ export class FakeSupabase {
       return json(n);
     }
     // 0171: 会員の条件ごとの送料無料（member_free_shipping_over と同じ: セッションが生きている・モジュールが ON・会員の最新の独自項目・表示用の条件は除く・低い金額）
-    if (fn === "member_free_shipping_over") {
+    // 0183: member_free_shipping は当てはまる決まりの一覧（金額とセール商品を含まない印）
+    if (fn === "member_free_shipping_over" || fn === "member_free_shipping") {
+      const list = fn === "member_free_shipping";
       this.memberFreeShippingCalls = (this.memberFreeShippingCalls ?? 0) + 1;
       if (this.memberFreeShippingFail) return json({ code: "XX000", message: "boom" }, 500);
-      if (!this.liveMemberSession(args["p_shop_id"], args["p_customer_id"], args["p_epoch"], args["p_session_id"], Date.now())) return json(null);
+      if (!this.liveMemberSession(args["p_shop_id"], args["p_customer_id"], args["p_epoch"], args["p_session_id"], Date.now())) return json(list ? [] : null);
       const shop = this.tables.shops.find((x) => x["id"] === args["p_shop_id"]);
       const settings = (shop?.["settings"] as Row | undefined) ?? {};
-      if (((settings["modules"] as Row | undefined)?.["audiences"]) !== true) return json(null);
+      if (((settings["modules"] as Row | undefined)?.["audiences"]) !== true) return json(list ? [] : null);
       const rules = audienceFreeRules((settings["shipping"] as Row | undefined)?.["free_over_by_audience"]);
       const cust = this.tables.customers.find((x) => x["shop_id"] === args["p_shop_id"] && x["id"] === args["p_customer_id"]);
-      if (!cust) return json(null);
+      if (!cust) return json(list ? [] : null);
       const attrs = (cust["attributes"] as Record<string, unknown> | undefined) ?? {};
       let min: number | null = null;
+      const hits: { free_over_jpy: number; exclude_sale: boolean }[] = [];
       for (const r of rules) {
         const a = this.tables.audiences.find((x) => x["shop_id"] === args["p_shop_id"] && String(x["id"]).toLowerCase() === r.audience_id);
         if (!a || audienceDisplayOnly(a["condition"]) || !audienceOk(a["condition"], { member: true, attrs })) continue;
         min = min === null ? r.free_over_jpy : Math.min(min, r.free_over_jpy);
+        hits.push({ free_over_jpy: r.free_over_jpy, exclude_sale: r.exclude_sale });
       }
-      return json(min);
+      return json(list ? hits : min);
     }
     // 0170: 予約の手数料をショップの決まりで確かめる（値引きの後）
     if (fn === "reservation_payment_fee_check") {
